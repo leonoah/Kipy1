@@ -1,0 +1,547 @@
+import React, { useState, useEffect } from "react";
+import { User } from "@/entities/User";
+import { Availability } from "@/entities/Availability";
+import { useNavigate } from "react-router-dom";
+import { createPageUrl } from "@/utils";
+import { UploadFile } from "@/integrations/Core";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { 
+  Card, 
+  CardContent, 
+  CardDescription, 
+  CardFooter, 
+  CardHeader, 
+  CardTitle 
+} from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { 
+  ArrowRight, 
+  Loader2, 
+  Upload, 
+  Check, 
+  AlertCircle, 
+  User as UserIcon, 
+  Phone, 
+  MapPin,
+  Calendar,
+  Clock,
+  Bell,
+  Info,
+  Camera,
+  X
+} from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+
+const DAYS_OF_WEEK = [
+  { value: 0, label: "Sunday" },
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" }
+];
+
+const TIME_SLOTS = Array.from({ length: 24 }, (_, i) => {
+  const hour = i === 0 ? 12 : i > 12 ? i - 12 : i;
+  const ampm = i < 12 ? "AM" : "PM";
+  return { 
+    value: `${i.toString().padStart(2, "0")}:00`,
+    label: `${hour}:00 ${ampm}`
+  };
+});
+
+export default function BabysitterSetup() {
+  const navigate = useNavigate();
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [activeTab, setActiveTab] = useState("profile");
+  
+  // Form state
+  const [formData, setFormData] = useState({
+    full_name: "",
+    phone: "",
+    address: "",
+    age: "",
+    bio: "",
+    profile_image_url: "",
+    sms_notifications: true
+  });
+  
+  // Availability state
+  const [availability, setAvailability] = useState(
+    DAYS_OF_WEEK.map(day => ({
+      day: day.value,
+      available: false,
+      start_time: "09:00",
+      end_time: "17:00"
+    }))
+  );
+
+  useEffect(() => {
+    const loadUser = async () => {
+      try {
+        const userData = await User.me();
+        setUser(userData);
+        setFormData({
+          full_name: userData.full_name || "",
+          phone: userData.phone || "",
+          address: userData.address || "",
+          age: userData.age || "",
+          bio: userData.bio || "",
+          profile_image_url: userData.profile_image_url || "",
+          sms_notifications: userData.sms_notifications !== false // Default to true
+        });
+        
+        // If user is not a babysitter or already completed setup, redirect
+        if (userData.user_type !== "babysitter") {
+          navigate(createPageUrl("Home"));
+        }
+        
+        // Load availability if any exists
+        try {
+          const availabilityData = await Availability.filter({ babysitter_id: userData.id });
+          if (availabilityData.length > 0) {
+            const availMap = new Map();
+            availabilityData.forEach(avail => {
+              availMap.set(avail.day_of_week, {
+                available: true,
+                start_time: avail.start_time,
+                end_time: avail.end_time
+              });
+            });
+            
+            setAvailability(
+              DAYS_OF_WEEK.map(day => ({
+                day: day.value,
+                available: availMap.has(day.value),
+                start_time: availMap.has(day.value) ? availMap.get(day.value).start_time : "09:00",
+                end_time: availMap.has(day.value) ? availMap.get(day.value).end_time : "17:00"
+              }))
+            );
+          }
+        } catch (error) {
+          console.log("No availability data found, using defaults");
+        }
+      } catch (error) {
+        console.error("Error loading user:", error);
+        navigate(createPageUrl("Login"));
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    loadUser();
+  }, [navigate]);
+
+  const handleInputChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: type === "checkbox" ? checked : value
+    }));
+  };
+
+  const handleSwitchChange = (checked, name) => {
+    setFormData(prev => ({
+      ...prev,
+      [name]: checked
+    }));
+  };
+
+  const handleAvailabilityChange = (dayIndex, field, value) => {
+    setAvailability(prev => {
+      const newAvailability = [...prev];
+      newAvailability[dayIndex] = {
+        ...newAvailability[dayIndex],
+        [field]: value
+      };
+      return newAvailability;
+    });
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setUploadingPhoto(true);
+    try {
+      const result = await UploadFile({ file });
+      setFormData(prev => ({
+        ...prev,
+        profile_image_url: result.file_url
+      }));
+    } catch (error) {
+      console.error("Error uploading file:", error);
+      setError("Failed to upload profile photo. Please try again.");
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const validateForm = () => {
+    if (!formData.full_name.trim()) return "Please enter your full name";
+    if (!formData.phone.trim()) return "Please enter your phone number";
+    if (!formData.address.trim()) return "Please enter your address";
+    if (!formData.age) return "Please enter your age";
+    if (!formData.bio.trim()) return "Please enter a short bio";
+    
+    // Check if at least one day is selected for availability
+    const hasAvailability = availability.some(day => day.available);
+    if (!hasAvailability) return "Please select at least one day of availability";
+    
+    return null;
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
+    const validationError = validateForm();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    
+    setSaving(true);
+    try {
+      // Save user profile data
+      await User.updateMyUserData({
+        ...formData,
+        age: parseInt(formData.age),
+        completed_setup: true
+      });
+      
+      // Save availability data
+      const availabilityToSave = [];
+      
+      // Delete existing availability
+      try {
+        const existingAvailability = await Availability.filter({ babysitter_id: user.id });
+        for (const avail of existingAvailability) {
+          await Availability.delete(avail.id);
+        }
+      } catch (error) {
+        console.log("No existing availability to delete");
+      }
+      
+      // Create new availability records
+      for (const day of availability) {
+        if (day.available) {
+          await Availability.create({
+            babysitter_id: user.id,
+            day_of_week: day.day,
+            start_time: day.start_time,
+            end_time: day.end_time
+          });
+        }
+      }
+      
+      navigate(createPageUrl("Home"));
+    } catch (error) {
+      console.error("Error saving profile:", error);
+      setError("Failed to save your profile. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-[calc(100vh-200px)] flex items-center justify-center p-4">
+        <div className="text-center">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-purple-600" />
+          <p className="mt-2 text-gray-600">Loading your profile...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-[calc(100vh-200px)] py-10 px-4 bg-gray-50">
+      <div className="max-w-2xl mx-auto">
+        <Card className="shadow-md">
+          <CardHeader>
+            <CardTitle className="text-2xl text-center">Complete Your Babysitter Profile</CardTitle>
+            <CardDescription className="text-center">
+              Set up your profile to start connecting with families
+            </CardDescription>
+          </CardHeader>
+          
+          <Tabs defaultValue="profile" value={activeTab} onValueChange={setActiveTab}>
+            <div className="px-6">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="profile">Profile Information</TabsTrigger>
+                <TabsTrigger value="availability">Your Availability</TabsTrigger>
+              </TabsList>
+            </div>
+            
+            <CardContent className="pt-6">
+              {error && (
+                <Alert variant="destructive" className="mb-6">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+              
+              <TabsContent value="profile" className="space-y-6">
+                <div className="flex justify-center mb-6">
+                  <div className="relative">
+                    <div className="h-24 w-24 rounded-full overflow-hidden border-4 border-white shadow-md">
+                      {formData.profile_image_url ? (
+                        <img 
+                          src={formData.profile_image_url} 
+                          alt="Profile" 
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="h-full w-full bg-purple-100 flex items-center justify-center">
+                          <UserIcon className="h-12 w-12 text-purple-300" />
+                        </div>
+                      )}
+                    </div>
+                    <Input
+                      id="profile_image"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleFileUpload}
+                    />
+                    <Label
+                      htmlFor="profile_image"
+                      className="absolute bottom-0 right-0 bg-purple-600 text-white rounded-full p-1.5 cursor-pointer shadow-md hover:bg-purple-700"
+                    >
+                      {uploadingPhoto ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Camera className="h-4 w-4" />
+                      )}
+                    </Label>
+                  </div>
+                </div>
+                
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="full_name" className="flex items-center gap-2">
+                      <UserIcon className="h-4 w-4 text-gray-500" />
+                      Full Name
+                    </Label>
+                    <Input
+                      id="full_name"
+                      name="full_name"
+                      value={formData.full_name}
+                      onChange={handleInputChange}
+                      placeholder="Enter your full name"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="phone" className="flex items-center gap-2">
+                        <Phone className="h-4 w-4 text-gray-500" />
+                        Phone Number
+                      </Label>
+                      <Input
+                        id="phone"
+                        name="phone"
+                        value={formData.phone}
+                        onChange={handleInputChange}
+                        placeholder="Enter your phone number"
+                      />
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <Label htmlFor="age" className="flex items-center gap-2">
+                        <Info className="h-4 w-4 text-gray-500" />
+                        Age
+                      </Label>
+                      <Input
+                        id="age"
+                        name="age"
+                        type="number"
+                        value={formData.age}
+                        onChange={handleInputChange}
+                        placeholder="Your age"
+                        min="18"
+                        max="100"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="address" className="flex items-center gap-2">
+                      <MapPin className="h-4 w-4 text-gray-500" />
+                      Address
+                    </Label>
+                    <Input
+                      id="address"
+                      name="address"
+                      value={formData.address}
+                      onChange={handleInputChange}
+                      placeholder="Enter your address"
+                    />
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="bio" className="flex items-center gap-2">
+                      <Info className="h-4 w-4 text-gray-500" />
+                      About Me
+                    </Label>
+                    <Textarea
+                      id="bio"
+                      name="bio"
+                      value={formData.bio}
+                      onChange={handleInputChange}
+                      placeholder="Tell families a bit about yourself, your experience with children, etc."
+                      rows={4}
+                    />
+                  </div>
+                  
+                  <div className="flex items-center space-x-2 pt-2">
+                    <Switch
+                      id="sms_notifications"
+                      name="sms_notifications"
+                      checked={formData.sms_notifications}
+                      onCheckedChange={(checked) => handleSwitchChange(checked, "sms_notifications")}
+                    />
+                    <Label htmlFor="sms_notifications" className="flex items-center gap-2">
+                      <Bell className="h-4 w-4 text-gray-500" />
+                      Receive SMS notifications when parents contact you
+                    </Label>
+                  </div>
+                </div>
+                
+                <div className="flex justify-end pt-4">
+                  <Button 
+                    type="button" 
+                    onClick={() => setActiveTab("availability")}
+                    className="bg-purple-600 hover:bg-purple-700"
+                  >
+                    Next: Set Availability
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Button>
+                </div>
+              </TabsContent>
+              
+              <TabsContent value="availability" className="space-y-6">
+                <Alert className="bg-blue-50 border-blue-200">
+                  <Info className="h-4 w-4 text-blue-600" />
+                  <AlertDescription className="text-blue-700">
+                    Set your weekly availability to help parents find you when they need a babysitter.
+                  </AlertDescription>
+                </Alert>
+                
+                <div className="space-y-4">
+                  {DAYS_OF_WEEK.map((day, index) => (
+                    <div 
+                      key={day.value} 
+                      className={`p-4 rounded-lg border ${
+                        availability[index].available 
+                          ? "border-purple-200 bg-purple-50" 
+                          : "border-gray-200"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            id={`day-${day.value}`}
+                            checked={availability[index].available}
+                            onCheckedChange={(checked) => handleAvailabilityChange(index, "available", checked)}
+                          />
+                          <Label htmlFor={`day-${day.value}`} className="font-medium">
+                            {day.label}
+                          </Label>
+                        </div>
+                        
+                        {availability[index].available && (
+                          <div className="flex items-center text-sm text-gray-500">
+                            <Clock className="h-4 w-4 mr-1" />
+                            {availability[index].start_time} - {availability[index].end_time}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {availability[index].available && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor={`start-${day.value}`} className="text-sm">
+                              Start Time
+                            </Label>
+                            <select
+                              id={`start-${day.value}`}
+                              value={availability[index].start_time}
+                              onChange={(e) => handleAvailabilityChange(index, "start_time", e.target.value)}
+                              className="w-full rounded-md border border-gray-200 p-2 text-sm"
+                            >
+                              {TIME_SLOTS.map(time => (
+                                <option key={`start-${day.value}-${time.value}`} value={time.value}>
+                                  {time.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <Label htmlFor={`end-${day.value}`} className="text-sm">
+                              End Time
+                            </Label>
+                            <select
+                              id={`end-${day.value}`}
+                              value={availability[index].end_time}
+                              onChange={(e) => handleAvailabilityChange(index, "end_time", e.target.value)}
+                              className="w-full rounded-md border border-gray-200 p-2 text-sm"
+                            >
+                              {TIME_SLOTS.map(time => (
+                                <option key={`end-${day.value}-${time.value}`} value={time.value}>
+                                  {time.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                
+                <div className="flex justify-between pt-4">
+                  <Button 
+                    type="button" 
+                    variant="outline"
+                    onClick={() => setActiveTab("profile")}
+                  >
+                    Back to Profile
+                  </Button>
+                  <Button 
+                    onClick={handleSubmit}
+                    className="bg-purple-600 hover:bg-purple-700"
+                    disabled={saving}
+                  >
+                    {saving ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        Complete Profile
+                        <ArrowRight className="ml-2 h-4 w-4" />
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </TabsContent>
+            </CardContent>
+          </Tabs>
+        </Card>
+      </div>
+    </div>
+  );
+}
